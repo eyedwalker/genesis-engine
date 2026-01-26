@@ -9,10 +9,11 @@ import { cn } from '@/lib/utils'
 interface FactoryCardProps {
   name: string
   domain: string
-  status: 'active' | 'building' | 'paused' | 'error'
+  status: string
   featuresBuilt: number
   lastActivity: string
   assistants: string[]
+  onDelete?: () => void
 }
 
 export function FactoryCard({
@@ -21,18 +22,21 @@ export function FactoryCard({
   status,
   featuresBuilt,
   lastActivity,
-  assistants
+  assistants,
+  onDelete
 }: FactoryCardProps) {
-  const statusColors = {
+  const statusColors: Record<string, string> = {
     active: 'bg-emerald-500',
     building: 'bg-blue-500 animate-pulse',
+    provisioning: 'bg-blue-500 animate-pulse',
     paused: 'bg-amber-500',
     error: 'bg-red-500',
   }
 
-  const statusLabels = {
+  const statusLabels: Record<string, string> = {
     active: 'Active',
     building: 'Building...',
+    provisioning: 'Provisioning...',
     paused: 'Paused',
     error: 'Error',
   }
@@ -74,7 +78,7 @@ export function FactoryCard({
               <button className="p-1.5 hover:bg-slate-800 rounded-lg" title="Pause">
                 <Pause className="w-4 h-4 text-slate-400" />
               </button>
-            ) : (
+            ) : status !== 'building' && (
               <button className="p-1.5 hover:bg-slate-800 rounded-lg" title="Resume">
                 <Play className="w-4 h-4 text-slate-400" />
               </button>
@@ -82,6 +86,15 @@ export function FactoryCard({
             <button className="p-1.5 hover:bg-slate-800 rounded-lg" title="Open">
               <ExternalLink className="w-4 h-4 text-slate-400" />
             </button>
+            {onDelete && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                className="p-1.5 hover:bg-red-500/20 rounded-lg"
+                title="Delete"
+              >
+                <Trash2 className="w-4 h-4 text-red-400" />
+              </button>
+            )}
           </div>
         </div>
 

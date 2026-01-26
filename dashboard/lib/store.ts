@@ -1,12 +1,16 @@
 import { create } from 'zustand'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 interface Factory {
   id: string
   name: string
   domain: string
-  status: 'active' | 'building' | 'paused' | 'error'
-  featuresBuilt: number
-  lastActivity: string
+  description: string
+  status: string
+  features_built: number
+  created_at: string
+  updated_at: string
   assistants: string[]
 }
 
@@ -16,126 +20,246 @@ interface Assistant {
   domain: string
   tags: string[]
   description: string
+  methods_count: number
+}
+
+interface Finding {
+  id: string
+  severity: string
+  title: string
+  description: string
+  assistant: string
+  line?: number
+  code_snippet?: string
+  recommendation?: string
+}
+
+interface ReviewResult {
+  review_id: string
+  status: string
+  file_name: string
+  language: string
+  findings: Finding[]
+  summary: {
+    critical: number
+    high: number
+    medium: number
+    low: number
+  }
+  assistants_used: string[]
+}
+
+interface Stats {
+  factories: { total: number; active: number }
+  features: { total: number }
+  reviews: { total: number; findings: Record<string, number> }
+  assistants: { loaded: number }
 }
 
 interface GenesisState {
   // Data
   factories: Factory[]
   assistants: Assistant[]
+  stats: Stats | null
+  lastReview: ReviewResult | null
   isLoading: boolean
   error: string | null
 
   // WebSocket
   wsConnected: boolean
-  onlineUsers: string[]
+  onlineUsers: any[]
 
   // Actions
   loadData: () => Promise<void>
-  createFactory: (factory: Partial<Factory>) => Promise<void>
-  updateFactory: (id: string, updates: Partial<Factory>) => void
-  deleteFactory: (id: string) => void
+  loadStats: () => Promise<void>
+  createFactory: (data: { name: string; domain: string; description: string; assistants: string[] }) => Promise<Factory | null>
+  updateFactory: (id: string, updates: Partial<Factory>) => Promise<void>
+  deleteFactory: (id: string) => Promise<void>
+  reviewCode: (code: string, fileName: string, assistants: string[], factoryId?: string) => Promise<ReviewResult | null>
 
   // WebSocket actions
   setWsConnected: (connected: boolean) => void
-  setOnlineUsers: (users: string[]) => void
+  setOnlineUsers: (users: any[]) => void
 }
 
 export const useGenesisStore = create<GenesisState>((set, get) => ({
   // Initial state
   factories: [],
   assistants: [],
+  stats: null,
+  lastReview: null,
   isLoading: false,
   error: null,
   wsConnected: false,
   onlineUsers: [],
 
-  // Actions
+  // Load all data from API
   loadData: async () => {
     set({ isLoading: true, error: null })
 
     try {
-      // In production, this would fetch from the API
-      // For now, use demo data
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      // Fetch factories and assistants in parallel
+      const [factoriesRes, assistantsRes] = await Promise.all([
+        fetch(`${API_URL}/api/factories`),
+        fetch(`${API_URL}/api/assistants`)
+      ])
 
-      set({
-        factories: [
-          {
-            id: '1',
-            name: 'Healthcare Platform',
-            domain: 'healthcare',
-            status: 'active',
-            featuresBuilt: 45,
-            lastActivity: '2 minutes ago',
-            assistants: ['security', 'fhir', 'accessibility']
-          },
-          {
-            id: '2',
-            name: 'E-Commerce Engine',
-            domain: 'e-commerce',
-            status: 'active',
-            featuresBuilt: 32,
-            lastActivity: '15 minutes ago',
-            assistants: ['security', 'pci_dss', 'performance']
-          },
-        ],
-        assistants: [
-          {
-            id: 'security',
-            name: 'Security Reviewer',
-            domain: 'security',
-            tags: ['owasp', 'authentication', 'encryption'],
-            description: 'OWASP Top 10, authentication, authorization'
-          },
-          // Add more assistants...
-        ],
-        isLoading: false
-      })
-    } catch (error) {
-      set({ error: 'Failed to load data', isLoading: false })
-    }
-  },
-
-  createFactory: async (factory) => {
-    set({ isLoading: true })
-
-    try {
-      // In production, this would call the API
-      await new Promise(resolve => setTimeout(resolve, 2000))
-
-      const newFactory: Factory = {
-        id: String(Date.now()),
-        name: factory.name || 'New Factory',
-        domain: factory.domain || 'custom',
-        status: 'building',
-        featuresBuilt: 0,
-        lastActivity: 'Just now',
-        assistants: factory.assistants || ['security', 'performance']
+      if (!factoriesRes.ok || !assistantsRes.ok) {
+        throw new Error('Failed to fetch data')
       }
 
-      set(state => ({
-        factories: [...state.factories, newFactory],
+      const factories = await factoriesRes.json()
+      const assistants = await assistantsRes.json()
+
+      set({
+        factories,
+        assistants,
         isLoading: false
-      }))
+      })
+
+      // Also load stats
+      get().loadStats()
     } catch (error) {
-      set({ error: 'Failed to create factory', isLoading: false })
+      console.error('Failed to load data:', error)
+      set({ error: 'Failed to connect to API. Is the server running?', isLoading: false })
     }
   },
 
-  updateFactory: (id, updates) => {
-    set(state => ({
-      factories: state.factories.map(f =>
-        f.id === id ? { ...f, ...updates } : f
-      )
-    }))
+  // Load statistics
+  loadStats: async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/stats`)
+      if (res.ok) {
+        const stats = await res.json()
+        set({ stats })
+      }
+    } catch (error) {
+      console.error('Failed to load stats:', error)
+    }
   },
 
-  deleteFactory: (id) => {
-    set(state => ({
-      factories: state.factories.filter(f => f.id !== id)
-    }))
+  // Create a new factory
+  createFactory: async (data) => {
+    set({ isLoading: true, error: null })
+
+    try {
+      const res = await fetch(`${API_URL}/api/factories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+
+      if (!res.ok) {
+        throw new Error('Failed to create factory')
+      }
+
+      const factory = await res.json()
+
+      set(state => ({
+        factories: [factory, ...state.factories],
+        isLoading: false
+      }))
+
+      // Refresh stats
+      get().loadStats()
+
+      return factory
+    } catch (error) {
+      console.error('Failed to create factory:', error)
+      set({ error: 'Failed to create factory', isLoading: false })
+      return null
+    }
+  },
+
+  // Update factory
+  updateFactory: async (id, updates) => {
+    try {
+      const res = await fetch(`${API_URL}/api/factories/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      })
+
+      if (res.ok) {
+        const updated = await res.json()
+        set(state => ({
+          factories: state.factories.map(f => f.id === id ? updated : f)
+        }))
+      }
+    } catch (error) {
+      console.error('Failed to update factory:', error)
+    }
+  },
+
+  // Delete factory
+  deleteFactory: async (id) => {
+    try {
+      const res = await fetch(`${API_URL}/api/factories/${id}`, {
+        method: 'DELETE'
+      })
+
+      if (res.ok) {
+        set(state => ({
+          factories: state.factories.filter(f => f.id !== id)
+        }))
+        get().loadStats()
+      }
+    } catch (error) {
+      console.error('Failed to delete factory:', error)
+    }
+  },
+
+  // Review code using assistants
+  reviewCode: async (code, fileName, assistants, factoryId) => {
+    set({ isLoading: true, error: null })
+
+    try {
+      const res = await fetch(`${API_URL}/api/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          file_name: fileName,
+          assistants,
+          factory_id: factoryId
+        })
+      })
+
+      if (!res.ok) {
+        throw new Error('Failed to review code')
+      }
+
+      const result = await res.json()
+
+      set({ lastReview: result, isLoading: false })
+
+      // Refresh stats after review
+      get().loadStats()
+
+      return result
+    } catch (error) {
+      console.error('Failed to review code:', error)
+      set({ error: 'Failed to review code', isLoading: false })
+      return null
+    }
   },
 
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setOnlineUsers: (users) => set({ onlineUsers: users }),
 }))
+
+// Helper to format relative time
+export function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(diff / 3600000)
+  const days = Math.floor(diff / 86400000)
+
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`
+  if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`
+  return `${days} day${days > 1 ? 's' : ''} ago`
+}

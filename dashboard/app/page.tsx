@@ -14,12 +14,12 @@ import { AssistantPanel } from '@/components/AssistantPanel'
 import { CodeReviewPanel } from '@/components/CodeReviewPanel'
 import { CreateFactoryModal } from '@/components/CreateFactoryModal'
 import { LiveCollaboration } from '@/components/LiveCollaboration'
-import { useGenesisStore } from '@/lib/store'
+import { useGenesisStore, formatRelativeTime } from '@/lib/store'
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'factories' | 'review' | 'assistants' | 'live'>('factories')
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const { factories, assistants, loadData, isLoading } = useGenesisStore()
+  const { factories, assistants, stats, loadData, isLoading, error } = useGenesisStore()
 
   useEffect(() => {
     loadData()
@@ -53,10 +53,14 @@ export default function Dashboard() {
                 />
               </div>
 
-              {/* Live indicator */}
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full">
-                <span className="w-2 h-2 bg-emerald-500 rounded-full pulse-dot" />
-                <span className="text-xs text-emerald-400">3 users online</span>
+              {/* API Status */}
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${
+                error ? 'bg-red-500/10 border border-red-500/20' : 'bg-emerald-500/10 border border-emerald-500/20'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${error ? 'bg-red-500' : 'bg-emerald-500 pulse-dot'}`} />
+                <span className={`text-xs ${error ? 'text-red-400' : 'text-emerald-400'}`}>
+                  {error ? 'API Offline' : `${stats?.assistants?.loaded || 0} assistants loaded`}
+                </span>
               </div>
 
               {/* Actions */}
@@ -71,6 +75,14 @@ export default function Dashboard() {
           </div>
         </header>
 
+        {/* Error Banner */}
+        {error && (
+          <div className="mx-6 mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+            <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-red-400/60 text-xs mt-1">Make sure the API server is running: ./start.sh</p>
+          </div>
+        )}
+
         {/* Content */}
         <div className="p-6">
           <AnimatePresence mode="wait">
@@ -82,7 +94,7 @@ export default function Dashboard() {
                 exit={{ opacity: 0, y: -20 }}
                 transition={{ duration: 0.2 }}
               >
-                <FactoriesView factories={factories} isLoading={isLoading} />
+                <FactoriesView factories={factories} stats={stats} isLoading={isLoading} />
               </motion.div>
             )}
 
@@ -135,7 +147,9 @@ export default function Dashboard() {
 }
 
 // Factories View Component
-function FactoriesView({ factories, isLoading }: { factories: any[]; isLoading: boolean }) {
+function FactoriesView({ factories, stats, isLoading }: { factories: any[]; stats: any; isLoading: boolean }) {
+  const { loadData, deleteFactory } = useGenesisStore()
+
   return (
     <div className="space-y-6">
       {/* Stats */}
@@ -143,29 +157,29 @@ function FactoriesView({ factories, isLoading }: { factories: any[]; isLoading: 
         <StatCard
           icon={<Factory className="w-5 h-5" />}
           label="Active Factories"
-          value="5"
-          change="+2 this week"
+          value={String(stats?.factories?.active || factories.length)}
+          change={`${stats?.factories?.total || 0} total`}
           color="blue"
         />
         <StatCard
           icon={<FileCode className="w-5 h-5" />}
           label="Features Built"
-          value="127"
-          change="+23 this week"
+          value={String(stats?.features?.total || 0)}
+          change="across all factories"
           color="purple"
         />
         <StatCard
           icon={<CheckCircle className="w-5 h-5" />}
-          label="Success Rate"
-          value="94.2%"
-          change="+1.5%"
+          label="Code Reviews"
+          value={String(stats?.reviews?.total || 0)}
+          change={`${stats?.reviews?.findings?.critical || 0} critical found`}
           color="emerald"
         />
         <StatCard
-          icon={<AlertTriangle className="w-5 h-5" />}
-          label="Pending Escalations"
-          value="3"
-          change="-2 resolved"
+          icon={<Shield className="w-5 h-5" />}
+          label="Assistants Active"
+          value={String(stats?.assistants?.loaded || 0)}
+          change="18 available"
           color="amber"
         />
       </div>
@@ -174,13 +188,16 @@ function FactoriesView({ factories, isLoading }: { factories: any[]; isLoading: 
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Your Factories</h2>
-          <button className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-300">
-            <RefreshCw className="w-4 h-4" />
+          <button
+            onClick={() => loadData()}
+            className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-300"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
         </div>
 
-        {isLoading ? (
+        {isLoading && factories.length === 0 ? (
           <div className="grid grid-cols-2 gap-4">
             {[1, 2, 3, 4].map((i) => (
               <div
@@ -189,41 +206,26 @@ function FactoriesView({ factories, isLoading }: { factories: any[]; isLoading: 
               />
             ))}
           </div>
+        ) : factories.length === 0 ? (
+          <div className="text-center py-12 bg-slate-900 border border-slate-800 rounded-xl">
+            <Factory className="w-12 h-12 mx-auto text-slate-600 mb-4" />
+            <p className="text-slate-400">No factories yet</p>
+            <p className="text-slate-500 text-sm mt-1">Create your first factory to get started</p>
+          </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
-            {/* Demo factories */}
-            <FactoryCard
-              name="Healthcare Platform"
-              domain="healthcare"
-              status="active"
-              featuresBuilt={45}
-              lastActivity="2 minutes ago"
-              assistants={['security', 'fhir', 'accessibility']}
-            />
-            <FactoryCard
-              name="E-Commerce Engine"
-              domain="e-commerce"
-              status="active"
-              featuresBuilt={32}
-              lastActivity="15 minutes ago"
-              assistants={['security', 'pci_dss', 'performance']}
-            />
-            <FactoryCard
-              name="Logistics Platform"
-              domain="logistics"
-              status="building"
-              featuresBuilt={18}
-              lastActivity="Just now"
-              assistants={['security', 'microservices', 'docker']}
-            />
-            <FactoryCard
-              name="FinTech API"
-              domain="fintech"
-              status="paused"
-              featuresBuilt={27}
-              lastActivity="2 days ago"
-              assistants={['security', 'pci_dss', 'soc2', 'gdpr']}
-            />
+            {factories.map((factory) => (
+              <FactoryCard
+                key={factory.id}
+                name={factory.name}
+                domain={factory.domain}
+                status={factory.status}
+                featuresBuilt={factory.features_built}
+                lastActivity={formatRelativeTime(factory.updated_at)}
+                assistants={factory.assistants}
+                onDelete={() => deleteFactory(factory.id)}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -259,7 +261,7 @@ function StatCard({
       </div>
       <p className="text-2xl font-bold">{value}</p>
       <p className="text-sm text-slate-400">{label}</p>
-      <p className={`text-xs mt-1 ${color === 'amber' ? 'text-amber-400' : 'text-emerald-400'}`}>
+      <p className="text-xs mt-1 text-slate-500">
         {change}
       </p>
     </div>

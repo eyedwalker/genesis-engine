@@ -26,11 +26,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Back
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Import database module
-try:
-    from genesis import database as db
-except ImportError:
-    from .. import database as db
+# Import database module directly (avoid genesis/__init__.py which has heavy deps)
+import sys
+_db_path = Path(__file__).parent.parent / "database.py"
+_spec = importlib.util.spec_from_file_location("database", _db_path)
+db = importlib.util.module_from_spec(_spec)
+sys.modules["genesis.database"] = db
+_spec.loader.exec_module(db)
 
 
 # ============================================================================

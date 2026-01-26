@@ -58,8 +58,12 @@ setup_python() {
 
     source venv/bin/activate
     pip install -q --upgrade pip
-    pip install -q pydantic httpx uvicorn fastapi rich
-    pip install -q -e .
+
+    # Use minimal requirements for quick start (avoids numpy compilation issues on Python 3.13)
+    pip install -q -r requirements-minimal.txt
+
+    # Install package in editable mode without dependencies
+    pip install -q --no-deps -e .
 
     echo -e "${GREEN}✓ Python dependencies installed${NC}"
 }

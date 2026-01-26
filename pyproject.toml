@@ -1,0 +1,174 @@
+[tool.poetry]
+name = "hive-bizos-factory"
+version = "1.0.0"
+description = "Autonomous AI-powered software factory for healthcare (FHIR-compliant)"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/yourusername/hive-bizos-factory"
+repository = "https://github.com/yourusername/hive-bizos-factory"
+keywords = ["ai", "healthcare", "fhir", "hl7", "automation", "agents"]
+packages = [
+    { include = "agents" },
+    { include = "graph" },
+    { include = "genesis" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# Core AI Frameworks
+pydantic-ai = ">=1.47.0"
+pydantic = ">=2.10.0"
+langgraph = "0.2.45"
+langchain-core = "0.3.15"
+
+# AI Model SDKs
+anthropic = ">=0.40.0"
+openai = ">=1.54.3"
+
+# Web Framework
+fastapi = "0.115.0"
+uvicorn = {extras = ["standard"], version = "0.32.0"}
+httpx = "0.27.2"
+
+# Database
+psycopg2-binary = ">=2.9.10"
+asyncpg = ">=0.30.0"
+sqlmodel = "0.0.22"
+sqlalchemy = "2.0.35"
+alembic = "1.13.3"
+
+# AWS
+boto3 = "1.35.36"
+
+# Vector DB (optional)
+pymilvus = {version = "2.4.8", optional = true}
+
+# Genesis Engine (optional - Factory-as-a-Service)
+dagger-io = {version = ">=0.9.0", optional = true}
+
+# Utilities
+python-dotenv = "1.0.1"
+python-dateutil = "2.9.0"
+orjson = "3.10.7"
+loguru = "0.7.2"
+
+[tool.poetry.group.dev.dependencies]
+# Code Quality
+ruff = "0.7.4"
+mypy = "1.13.0"
+black = "24.10.0"
+
+# Testing
+pytest = "8.3.3"
+pytest-asyncio = "0.24.0"
+pytest-cov = "5.0.0"
+
+# Development
+ipython = "8.29.0"
+jupyter = "1.1.1"
+
+[tool.poetry.extras]
+milvus = ["pymilvus"]
+genesis = ["dagger-io", "pymilvus"]
+all = ["pymilvus", "dagger-io"]
+
+[tool.poetry.scripts]
+factory = "examples.demo:main"
+genesis = "examples.genesis_demo:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# ============================================================================
+# Ruff Configuration
+# ============================================================================
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+
+# ============================================================================
+# MyPy Configuration
+# ============================================================================
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pymilvus.*",
+    "boto3.*",
+    "botocore.*",
+    "dagger.*",
+]
+ignore_missing_imports = true
+
+# ============================================================================
+# Pytest Configuration
+# ============================================================================
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=agents",
+    "--cov=graph",
+    "--cov=genesis",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# ============================================================================
+# Coverage Configuration
+# ============================================================================
+
+[tool.coverage.run]
+source = ["agents", "graph", "genesis"]
+omit = [
+    "*/tests/*",
+    "*/examples/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

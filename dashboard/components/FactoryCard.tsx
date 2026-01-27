@@ -2,7 +2,7 @@
 
 import {
   Factory, Play, Pause, Trash2, ExternalLink,
-  ChevronRight, Clock, FileCode, Shield
+  ChevronRight, Clock, FileCode, Shield, ListChecks
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -14,6 +14,7 @@ interface FactoryCardProps {
   lastActivity: string
   assistants: string[]
   onDelete?: () => void
+  onSetup?: () => void
 }
 
 export function FactoryCard({
@@ -23,7 +24,8 @@ export function FactoryCard({
   featuresBuilt,
   lastActivity,
   assistants,
-  onDelete
+  onDelete,
+  onSetup
 }: FactoryCardProps) {
   const statusColors: Record<string, string> = {
     active: 'bg-emerald-500',
@@ -74,6 +76,15 @@ export function FactoryCard({
           </div>
 
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {onSetup && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onSetup(); }}
+                className="p-1.5 hover:bg-purple-500/20 rounded-lg"
+                title="Setup Checklist"
+              >
+                <ListChecks className="w-4 h-4 text-purple-400" />
+              </button>
+            )}
             {status === 'active' ? (
               <button className="p-1.5 hover:bg-slate-800 rounded-lg" title="Pause">
                 <Pause className="w-4 h-4 text-slate-400" />

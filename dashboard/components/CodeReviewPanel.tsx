@@ -4,7 +4,7 @@ import { useState } from 'react'
 import dynamic from 'next/dynamic'
 import {
   Shield, AlertTriangle, CheckCircle, XCircle,
-  Play, Copy, Download, RefreshCw, ChevronDown
+  Play, Copy, Download, RefreshCw, ChevronDown, Sparkles, Wand2, Check
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGenesisStore } from '@/lib/store'
@@ -60,8 +60,10 @@ export function CodeReviewPanel() {
   const [isReviewing, setIsReviewing] = useState(false)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [summary, setSummary] = useState<Record<string, number>>({})
+  const [useAI, setUseAI] = useState(false)
+  const [fixingId, setFixingId] = useState<string | null>(null)
 
-  const { reviewCode } = useGenesisStore()
+  const { reviewCode, generateFix } = useGenesisStore()
 
   const toggleAssistant = (id: string) => {
     setSelectedAssistants(prev =>
@@ -83,7 +85,7 @@ export function CodeReviewPanel() {
     setSelectedFinding(null)
 
     try {
-      const result = await reviewCode(code, fileName, selectedAssistants)
+      const result = await reviewCode(code, fileName, selectedAssistants, undefined, useAI)
 
       if (result) {
         setFindings(result.findings)
@@ -104,11 +106,44 @@ export function CodeReviewPanel() {
           }
         }
       }
-    } catch (error) {
-      toast.error('Failed to run review')
+    } catch (error: any) {
+      const message = error?.message || 'Failed to run review'
+      if (message.includes('ANTHROPIC_API_KEY')) {
+        toast.error('AI review requires ANTHROPIC_API_KEY. Add it to .env file.')
+      } else {
+        toast.error(message)
+      }
     }
 
     setIsReviewing(false)
+  }
+
+  const handleFix = async (finding: Finding) => {
+    setFixingId(finding.id)
+    try {
+      const result = await generateFix(code, finding)
+      if (result) {
+        setCode(result.fixed_code)
+        toast.success(`Applied fix: ${result.explanation}`)
+        // Remove the fixed finding from the list
+        setFindings(prev => prev.filter(f => f.id !== finding.id))
+        // Update summary
+        setSummary(prev => ({
+          ...prev,
+          [finding.severity]: Math.max(0, (prev[finding.severity] || 0) - 1)
+        }))
+      } else {
+        toast.error('Failed to generate fix')
+      }
+    } catch (error) {
+      toast.error('Failed to apply fix')
+    }
+    setFixingId(null)
+  }
+
+  const copyRecommendation = (recommendation: string) => {
+    navigator.clipboard.writeText(recommendation)
+    toast.success('Copied recommendation to clipboard')
   }
 
   const severityColors: Record<string, string> = {
@@ -194,20 +229,53 @@ export function CodeReviewPanel() {
             ))}
           </div>
 
+          {/* AI Toggle */}
+          <div className="flex items-center justify-between mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+            <div className="flex items-center gap-2">
+              <Sparkles className={cn("w-4 h-4", useAI ? "text-purple-400" : "text-slate-500")} />
+              <span className="text-sm">AI-Powered Review</span>
+              <span className="text-xs text-slate-500">(Claude)</span>
+            </div>
+            <button
+              onClick={() => setUseAI(!useAI)}
+              className={cn(
+                "relative w-11 h-6 rounded-full transition-colors",
+                useAI ? "bg-purple-600" : "bg-slate-600"
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform",
+                  useAI && "translate-x-5"
+                )}
+              />
+            </button>
+          </div>
+          {useAI && (
+            <p className="text-xs text-purple-400 mt-2">
+              Requires ANTHROPIC_API_KEY environment variable
+            </p>
+          )}
+
           <button
             onClick={runReview}
             disabled={isReviewing || selectedAssistants.length === 0}
-            className="w-full mt-4 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg transition-colors"
+            className={cn(
+              "w-full mt-4 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg transition-colors",
+              useAI
+                ? "bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500"
+                : "bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500"
+            )}
           >
             {isReviewing ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                Reviewing...
+                {useAI ? "AI Analyzing..." : "Reviewing..."}
               </>
             ) : (
               <>
-                <Play className="w-4 h-4" />
-                Run Review
+                {useAI ? <Sparkles className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                {useAI ? "Run AI Review" : "Run Review"}
               </>
             )}
           </button>
@@ -299,7 +367,39 @@ export function CodeReviewPanel() {
                     {finding.recommendation && (
                       <div className="mt-3 pt-3 border-t border-slate-700">
                         <p className="text-xs text-slate-500 mb-2">Recommendation:</p>
-                        <p className="text-sm text-emerald-400">{finding.recommendation}</p>
+                        <p className="text-sm text-emerald-400 mb-3">{finding.recommendation}</p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleFix(finding)
+                            }}
+                            disabled={fixingId === finding.id}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 rounded-lg text-xs transition-colors"
+                          >
+                            {fixingId === finding.id ? (
+                              <>
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                Fixing...
+                              </>
+                            ) : (
+                              <>
+                                <Wand2 className="w-3 h-3" />
+                                Fix with AI
+                              </>
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              copyRecommendation(finding.recommendation!)
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs transition-colors"
+                          >
+                            <Copy className="w-3 h-3" />
+                            Copy
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>

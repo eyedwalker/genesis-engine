@@ -14,10 +14,13 @@ import { AssistantPanel } from '@/components/AssistantPanel'
 import { CodeReviewPanel } from '@/components/CodeReviewPanel'
 import { CreateFactoryModal } from '@/components/CreateFactoryModal'
 import { LiveCollaboration } from '@/components/LiveCollaboration'
+import { FactorySetupPanel } from '@/components/FactorySetupPanel'
+import { SettingsPanel } from '@/components/SettingsPanel'
+import { Terminal } from '@/components/Terminal'
 import { useGenesisStore, formatRelativeTime } from '@/lib/store'
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState<'factories' | 'review' | 'assistants' | 'live'>('factories')
+  const [activeTab, setActiveTab] = useState<'factories' | 'review' | 'assistants' | 'live' | 'settings' | 'terminal'>('factories')
   const [showCreateModal, setShowCreateModal] = useState(false)
   const { factories, assistants, stats, loadData, isLoading, error } = useGenesisStore()
 
@@ -133,6 +136,31 @@ export default function Dashboard() {
                 <LiveCollaboration />
               </motion.div>
             )}
+
+            {activeTab === 'settings' && (
+              <motion.div
+                key="settings"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <SettingsPanel />
+              </motion.div>
+            )}
+
+            {activeTab === 'terminal' && (
+              <motion.div
+                key="terminal"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.2 }}
+                className="h-[calc(100vh-12rem)]"
+              >
+                <Terminal className="h-full" />
+              </motion.div>
+            )}
           </AnimatePresence>
         </div>
       </main>
@@ -149,6 +177,7 @@ export default function Dashboard() {
 // Factories View Component
 function FactoriesView({ factories, stats, isLoading }: { factories: any[]; stats: any; isLoading: boolean }) {
   const { loadData, deleteFactory } = useGenesisStore()
+  const [selectedFactorySetup, setSelectedFactorySetup] = useState<{ id: string; name: string } | null>(null)
 
   return (
     <div className="space-y-6">
@@ -214,7 +243,7 @@ function FactoriesView({ factories, stats, isLoading }: { factories: any[]; stat
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
-            {factories.map((factory) => (
+            {factories.filter(f => f != null).map((factory) => (
               <FactoryCard
                 key={factory.id}
                 name={factory.name}
@@ -224,11 +253,22 @@ function FactoriesView({ factories, stats, isLoading }: { factories: any[]; stat
                 lastActivity={formatRelativeTime(factory.updated_at)}
                 assistants={factory.assistants}
                 onDelete={() => deleteFactory(factory.id)}
+                onSetup={() => setSelectedFactorySetup({ id: factory.id, name: factory.name })}
               />
             ))}
           </div>
         )}
       </div>
+
+      {/* Setup Panel */}
+      {selectedFactorySetup && (
+        <FactorySetupPanel
+          factoryId={selectedFactorySetup.id}
+          factoryName={selectedFactorySetup.name}
+          isOpen={true}
+          onClose={() => setSelectedFactorySetup(null)}
+        />
+      )}
     </div>
   )
 }

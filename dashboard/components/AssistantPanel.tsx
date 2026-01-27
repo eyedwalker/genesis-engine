@@ -127,7 +127,7 @@ export function AssistantPanel({ assistants: _ }: { assistants: any[] }) {
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null)
   const [selectedAssistant, setSelectedAssistant] = useState<Assistant | null>(null)
 
-  const domains = [...new Set(ASSISTANTS.map(a => a.domain))]
+  const domains = Array.from(new Set(ASSISTANTS.map(a => a.domain)))
 
   const filtered = ASSISTANTS.filter(a => {
     const matchesSearch = search === '' ||

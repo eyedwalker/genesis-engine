@@ -89,10 +89,16 @@ start_services() {
     lsof -ti:8000 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti:3000 2>/dev/null | xargs kill -9 2>/dev/null || true
 
+    # Load .env if exists (for API keys)
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+        echo -e "${GREEN}✓ Loaded environment from .env${NC}"
+    fi
+
     # Start API server in background
-    source venv/bin/activate
     echo -e "${BLUE}Starting API server on http://localhost:8000${NC}"
-    uvicorn genesis.api.server:app --host 0.0.0.0 --port 8000 --reload &> /tmp/genesis-api.log &
+    # Run server directly with full paths to avoid genesis/__init__.py (has pydantic_ai dep)
+    "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/genesis-engine/genesis/api/server.py" &> /tmp/genesis-api.log &
     API_PID=$!
     echo $API_PID > /tmp/genesis-api.pid
 

@@ -7,6 +7,9 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const WS_URL = API_URL.replace('http://', 'ws://').replace('https://', 'wss://')
+
 interface User {
   id: string
   name: string
@@ -89,7 +92,7 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
       wsRef.current.close()
     }
 
-    const wsUrl = `ws://localhost:8000/ws/${room}?user_id=${userId}&name=${encodeURIComponent(userName)}`
+    const wsUrl = `${WS_URL}/ws/${room}?user_id=${userId}&name=${encodeURIComponent(userName)}`
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {

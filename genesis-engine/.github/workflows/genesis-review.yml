@@ -1,0 +1,292 @@
+name: Genesis Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      assistants:
+        description: 'Comma-separated list of assistants to use'
+        required: false
+        default: 'security,performance,accessibility'
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  genesis-review:
+    name: Code Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pydantic httpx
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Get files changed in PR
+            files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} | grep -E '\.(py|js|ts|tsx|jsx)$' || true)
+          else
+            # Get files changed in push
+            files=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(py|js|ts|tsx|jsx)$' || true)
+          fi
+
+          # Convert to JSON array
+          if [ -n "$files" ]; then
+            echo "files=$(echo "$files" | jq -R -s -c 'split("\n") | map(select(length > 0))')" >> $GITHUB_OUTPUT
+            echo "has_files=true" >> $GITHUB_OUTPUT
+          else
+            echo "files=[]" >> $GITHUB_OUTPUT
+            echo "has_files=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Genesis Review
+        if: steps.changed-files.outputs.has_files == 'true'
+        id: review
+        run: |
+          python << 'PYTHON_SCRIPT'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          # Add genesis to path
+          sys.path.insert(0, str(Path.cwd()))
+
+          # Parse changed files
+          changed_files = json.loads(os.environ.get('CHANGED_FILES', '[]'))
+          assistants = os.environ.get('ASSISTANTS', 'security,performance').split(',')
+
+          print(f"🔍 Reviewing {len(changed_files)} files with assistants: {', '.join(assistants)}")
+          print("=" * 60)
+
+          findings = []
+
+          for file_path in changed_files:
+              if not Path(file_path).exists():
+                  continue
+
+              print(f"\n📄 Reviewing: {file_path}")
+
+              with open(file_path, 'r') as f:
+                  code = f.read()
+
+              # Simple pattern-based review
+              file_findings = []
+
+              # Security checks
+              if 'security' in assistants:
+                  # SQL injection
+                  if 'execute(' in code and 'f"' in code:
+                      file_findings.append({
+                          "severity": "critical",
+                          "assistant": "security",
+                          "title": "Potential SQL Injection",
+                          "description": "String interpolation in SQL query detected"
+                      })
+
+                  # Hardcoded secrets
+                  for pattern in ['password=', 'api_key=', 'secret=', 'token=']:
+                      if pattern in code.lower() and ('=' in code or "'" in code):
+                          file_findings.append({
+                              "severity": "high",
+                              "assistant": "security",
+                              "title": "Potential Hardcoded Secret",
+                              "description": f"Found '{pattern}' pattern in code"
+                          })
+                          break
+
+                  # eval usage
+                  if 'eval(' in code:
+                      file_findings.append({
+                          "severity": "critical",
+                          "assistant": "security",
+                          "title": "Dangerous eval() usage",
+                          "description": "eval() can execute arbitrary code"
+                      })
+
+              # Performance checks
+              if 'performance' in assistants:
+                  # N+1 query pattern
+                  if 'for ' in code and '.query(' in code:
+                      file_findings.append({
+                          "severity": "medium",
+                          "assistant": "performance",
+                          "title": "Potential N+1 Query",
+                          "description": "Database query inside loop detected"
+                      })
+
+              # Accessibility checks
+              if 'accessibility' in assistants:
+                  if '<img' in code and 'alt=' not in code:
+                      file_findings.append({
+                          "severity": "medium",
+                          "assistant": "accessibility",
+                          "title": "Missing alt attribute",
+                          "description": "Images should have alt text for screen readers"
+                      })
+
+              for finding in file_findings:
+                  finding['file'] = file_path
+                  findings.append(finding)
+
+                  severity_emoji = {
+                      'critical': '🔴',
+                      'high': '🟠',
+                      'medium': '🟡',
+                      'low': '🔵'
+                  }.get(finding['severity'], '⚪')
+
+                  print(f"  {severity_emoji} [{finding['severity'].upper()}] {finding['title']}")
+                  print(f"     {finding['description']}")
+
+          # Generate summary
+          summary = {
+              'total': len(findings),
+              'critical': len([f for f in findings if f['severity'] == 'critical']),
+              'high': len([f for f in findings if f['severity'] == 'high']),
+              'medium': len([f for f in findings if f['severity'] == 'medium']),
+              'low': len([f for f in findings if f['severity'] == 'low']),
+          }
+
+          print("\n" + "=" * 60)
+          print("📊 Summary")
+          print(f"  🔴 Critical: {summary['critical']}")
+          print(f"  🟠 High: {summary['high']}")
+          print(f"  🟡 Medium: {summary['medium']}")
+          print(f"  🔵 Low: {summary['low']}")
+          print(f"  📝 Total: {summary['total']}")
+
+          # Write outputs
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"findings={json.dumps(findings)}\n")
+              f.write(f"summary={json.dumps(summary)}\n")
+              f.write(f"has_critical={'true' if summary['critical'] > 0 else 'false'}\n")
+
+          # Exit with error if critical findings
+          if summary['critical'] > 0:
+              print("\n❌ Critical issues found! Please fix before merging.")
+              sys.exit(1)
+          else:
+              print("\n✅ No critical issues found.")
+          PYTHON_SCRIPT
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.files }}
+          ASSISTANTS: ${{ inputs.assistants || 'security,performance,accessibility' }}
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.has_files == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const findings = JSON.parse('${{ steps.review.outputs.findings || "[]" }}');
+            const summary = JSON.parse('${{ steps.review.outputs.summary || "{}" }}');
+
+            let body = `## 🤖 Genesis Code Review\n\n`;
+
+            // Summary badges
+            body += `| Severity | Count |\n`;
+            body += `|----------|-------|\n`;
+            body += `| 🔴 Critical | ${summary.critical || 0} |\n`;
+            body += `| 🟠 High | ${summary.high || 0} |\n`;
+            body += `| 🟡 Medium | ${summary.medium || 0} |\n`;
+            body += `| 🔵 Low | ${summary.low || 0} |\n\n`;
+
+            if (findings.length > 0) {
+              body += `### Findings\n\n`;
+
+              for (const finding of findings) {
+                const emoji = {
+                  critical: '🔴',
+                  high: '🟠',
+                  medium: '🟡',
+                  low: '🔵'
+                }[finding.severity] || '⚪';
+
+                body += `#### ${emoji} ${finding.title}\n`;
+                body += `- **File:** \`${finding.file}\`\n`;
+                body += `- **Severity:** ${finding.severity.toUpperCase()}\n`;
+                body += `- **Assistant:** ${finding.assistant}\n`;
+                body += `- **Description:** ${finding.description}\n\n`;
+              }
+            } else {
+              body += `✅ **No issues found!**\n\n`;
+            }
+
+            body += `---\n`;
+            body += `*Powered by [Genesis Engine](https://github.com/genesis-engine)*`;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('Genesis Code Review')
+            );
+
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Create check run
+        if: always() && steps.changed-files.outputs.has_files == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = JSON.parse('${{ steps.review.outputs.summary || "{}" }}');
+            const hasCritical = '${{ steps.review.outputs.has_critical }}' === 'true';
+
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Genesis Code Review',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: hasCritical ? 'failure' : 'success',
+              output: {
+                title: hasCritical ? 'Critical issues found' : 'Review passed',
+                summary: `Found ${summary.total || 0} issues (${summary.critical || 0} critical, ${summary.high || 0} high, ${summary.medium || 0} medium, ${summary.low || 0} low)`
+              }
+            });
+
+      - name: Fail on critical issues
+        if: steps.review.outputs.has_critical == 'true'
+        run: |
+          echo "❌ Critical security issues found. Please fix before merging."
+          exit 1

@@ -1,6 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const WS_URL = API_URL.replace('http://', 'ws://').replace('https://', 'wss://')
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -29,7 +32,7 @@ export function Terminal({ className }: TerminalProps) {
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/terminal/${sessionId}`)
+    const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`)
 
     ws.onopen = () => {
       setConnected(true)

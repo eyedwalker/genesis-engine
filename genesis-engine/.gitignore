@@ -325,9 +325,4 @@ id_rsa.pub
 # API keys
 *_api_key.txt
 *_secret.txt
-
-# Genesis Engine - ignore local artifacts but NOT the code
-genesis-engine/venv/
-genesis-engine/*.db
-genesis-engine/*.log
-genesis-engine/api.log
+genesis-engine/

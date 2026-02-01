@@ -267,6 +267,115 @@ def init_db():
                 )
             """)
 
+        # ---- Auth & Multi-Tenancy Tables ----
+
+        if USE_POSTGRES:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    plan TEXT DEFAULT 'free',
+                    max_factories INTEGER DEFAULT 5,
+                    max_reviews_per_month INTEGER DEFAULT 100,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT DEFAULT 'member',
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id),
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+                    key_hash TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used TIMESTAMP
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    plan TEXT DEFAULT 'free',
+                    max_factories INTEGER DEFAULT 5,
+                    max_reviews_per_month INTEGER DEFAULT 100,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT DEFAULT 'member',
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_login TEXT,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    key_hash TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_used TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(id),
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+                )
+            """)
+
+        # Add tenant_id columns to existing tables (safe migration)
+        for table in ["factories", "reviews", "sessions", "setup_tasks"]:
+            try:
+                if USE_POSTGRES:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                else:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+            except Exception:
+                pass  # Column already exists
+
+        # Create default tenant for backward compatibility
+        if USE_POSTGRES:
+            cursor.execute("""
+                INSERT INTO tenants (id, name, plan, max_factories, max_reviews_per_month)
+                VALUES ('default', 'Default Workspace', 'free', 999, 99999)
+                ON CONFLICT (id) DO NOTHING
+            """)
+        else:
+            cursor.execute("""
+                INSERT OR IGNORE INTO tenants (id, name, plan, max_factories, max_reviews_per_month)
+                VALUES ('default', 'Default Workspace', 'free', 999, 99999)
+            """)
+
+        conn.commit()
+
         # Initialize default settings
         default_settings = [
             ("anthropic_api_key", "", "ai", "Anthropic API Key", "Required for AI-powered planning and code review", "secret", True),
@@ -316,7 +425,8 @@ def create_factory(
     domain: str,
     description: str = "",
     assistants: List[str] = None,
-    config: Dict[str, Any] = None
+    config: Dict[str, Any] = None,
+    tenant_id: str = "default"
 ) -> Dict[str, Any]:
     """Create a new factory"""
     created_at = datetime.utcnow().isoformat()
@@ -327,14 +437,14 @@ def create_factory(
         cursor = conn.cursor()
         if USE_POSTGRES:
             cursor.execute("""
-                INSERT INTO factories (id, name, domain, description, assistants, config, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (id, name, domain, description, json.dumps(assistants_list), json.dumps(config_dict), created_at, created_at))
+                INSERT INTO factories (id, name, domain, description, assistants, config, created_at, updated_at, tenant_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (id, name, domain, description, json.dumps(assistants_list), json.dumps(config_dict), created_at, created_at, tenant_id))
         else:
             cursor.execute("""
-                INSERT INTO factories (id, name, domain, description, assistants, config, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (id, name, domain, description, json.dumps(assistants_list), json.dumps(config_dict), created_at, created_at))
+                INSERT INTO factories (id, name, domain, description, assistants, config, created_at, updated_at, tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (id, name, domain, description, json.dumps(assistants_list), json.dumps(config_dict), created_at, created_at, tenant_id))
 
     return {
         "id": id,
@@ -364,11 +474,15 @@ def get_factory(id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_all_factories() -> List[Dict[str, Any]]:
-    """Get all factories"""
+def get_all_factories(tenant_id: str = None) -> List[Dict[str, Any]]:
+    """Get all factories, optionally filtered by tenant"""
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM factories ORDER BY created_at DESC")
+        if tenant_id and tenant_id != "default":
+            p = "%s" if USE_POSTGRES else "?"
+            cursor.execute(f"SELECT * FROM factories WHERE tenant_id = {p} ORDER BY created_at DESC", (tenant_id,))
+        else:
+            cursor.execute("SELECT * FROM factories ORDER BY created_at DESC")
         rows = cursor.fetchall()
         return [_row_to_factory(row, cursor) for row in rows]
 

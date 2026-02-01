@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and fill in values
+# NEVER commit terraform.tfvars to git
+
+aws_region        = "us-east-1"
+project_name      = "genesis-engine"
+db_password       = "CHANGE_ME_strong_password_here"
+jwt_secret        = "CHANGE_ME_random_64_char_string"
+anthropic_api_key = "sk-ant-..."
+domain_name       = ""   # Optional: your-domain.com

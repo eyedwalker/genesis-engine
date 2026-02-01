@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import uuid
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -34,10 +34,44 @@ db = importlib.util.module_from_spec(_spec)
 sys.modules["genesis.database"] = db
 _spec.loader.exec_module(db)
 
+# Import auth module
+_auth_path = Path(__file__).parent.parent / "auth.py"
+_auth_spec = importlib.util.spec_from_file_location("genesis.auth", _auth_path)
+auth_module = importlib.util.module_from_spec(_auth_spec)
+sys.modules["genesis.auth"] = auth_module
+_auth_spec.loader.exec_module(auth_module)
+
+# Import middleware
+_mw_path = Path(__file__).parent.parent / "middleware.py"
+_mw_spec = importlib.util.spec_from_file_location("genesis.middleware", _mw_path)
+middleware_module = importlib.util.module_from_spec(_mw_spec)
+sys.modules["genesis.middleware"] = middleware_module
+_mw_spec.loader.exec_module(middleware_module)
+
 
 # ============================================================================
 # Models
 # ============================================================================
+
+class RegisterRequest(BaseModel):
+    """User registration"""
+    email: str = Field(..., min_length=5)
+    password: str = Field(..., min_length=8)
+    name: str = Field(..., min_length=1)
+    tenant_name: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    """User login"""
+    email: str
+    password: str
+
+class RefreshRequest(BaseModel):
+    """Token refresh"""
+    refresh_token: str
+
+class APIKeyCreate(BaseModel):
+    """Create API key"""
+    name: str = Field(..., min_length=1)
 
 class FactoryCreate(BaseModel):
     """Request model for creating a factory"""
@@ -413,6 +447,134 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add security middleware
+app.add_middleware(middleware_module.RequestLoggingMiddleware)
+app.add_middleware(middleware_module.RateLimitMiddleware)
+app.add_middleware(middleware_module.PIIRedactionMiddleware)
+
+
+# ============================================================================
+# REST Endpoints - Auth
+# ============================================================================
+
+@app.post("/api/auth/register")
+async def register(req: RegisterRequest):
+    """Register a new user and create a workspace"""
+    return auth_module.register_user(
+        email=req.email,
+        password=req.password,
+        name=req.name,
+        tenant_name=req.tenant_name,
+    )
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    """Authenticate and get tokens"""
+    return auth_module.login_user(req.email, req.password)
+
+
+@app.post("/api/auth/refresh")
+async def refresh(req: RefreshRequest):
+    """Refresh access token"""
+    return auth_module.refresh_access_token(req.refresh_token)
+
+
+@app.get("/api/auth/me")
+async def get_me(user: auth_module.AuthUser = Depends(auth_module.get_current_user)):
+    """Get current user info"""
+    if user.user_id == "system":
+        return {"user_id": "system", "tenant_id": "default", "role": "owner"}
+
+    with db.get_db() as conn:
+        cursor = conn.cursor()
+        p = "%s" if db.USE_POSTGRES else "?"
+        cursor.execute(f"""
+            SELECT u.id, u.email, u.name, u.role, u.tenant_id,
+                   t.name as tenant_name, t.plan
+            FROM users u JOIN tenants t ON u.tenant_id = t.id
+            WHERE u.id = {p}
+        """, (user.user_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        d = db._row_to_dict(row, cursor)
+        return {
+            "user": {
+                "id": d["id"],
+                "email": d["email"],
+                "name": d["name"],
+                "role": d["role"],
+                "tenant_id": d["tenant_id"],
+            },
+            "tenant": {
+                "id": d["tenant_id"],
+                "name": d["tenant_name"],
+                "plan": d["plan"],
+            }
+        }
+
+
+@app.post("/api/auth/api-keys")
+async def create_api_key(
+    req: APIKeyCreate,
+    user: auth_module.AuthUser = Depends(auth_module.require_auth),
+):
+    """Create an API key for programmatic access"""
+    key, hashed = auth_module.generate_api_key()
+    key_id = f"key-{uuid.uuid4().hex[:12]}"
+    now = datetime.utcnow().isoformat()
+
+    with db.get_db() as conn:
+        cursor = conn.cursor()
+        p = "%s" if db.USE_POSTGRES else "?"
+        cursor.execute(f"""
+            INSERT INTO api_keys (id, user_id, tenant_id, key_hash, name, created_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p})
+        """, (key_id, user.user_id, user.tenant_id, hashed, req.name, now))
+
+    return {
+        "id": key_id,
+        "key": key,
+        "name": req.name,
+        "message": "Store this key securely - it won't be shown again"
+    }
+
+
+@app.get("/api/auth/api-keys")
+async def list_api_keys(user: auth_module.AuthUser = Depends(auth_module.require_auth)):
+    """List API keys (without revealing the actual keys)"""
+    with db.get_db() as conn:
+        cursor = conn.cursor()
+        p = "%s" if db.USE_POSTGRES else "?"
+        cursor.execute(f"""
+            SELECT id, name, is_active, created_at, last_used
+            FROM api_keys WHERE user_id = {p}
+        """, (user.user_id,))
+        keys = []
+        for row in cursor.fetchall():
+            d = db._row_to_dict(row, cursor)
+            keys.append(d)
+        return keys
+
+
+@app.delete("/api/auth/api-keys/{key_id}")
+async def delete_api_key(
+    key_id: str,
+    user: auth_module.AuthUser = Depends(auth_module.require_auth),
+):
+    """Revoke an API key"""
+    with db.get_db() as conn:
+        cursor = conn.cursor()
+        p = "%s" if db.USE_POSTGRES else "?"
+        cursor.execute(f"""
+            UPDATE api_keys SET is_active = false
+            WHERE id = {p} AND user_id = {p}
+        """, (key_id, user.user_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="API key not found")
+    return {"status": "revoked"}
 
 
 # ============================================================================

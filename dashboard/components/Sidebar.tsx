@@ -2,7 +2,7 @@
 
 import {
   Factory, Shield, Zap, Eye, FileCode, Settings,
-  Users, Activity, GitBranch, Terminal
+  Users, Activity, GitBranch, Terminal, Hammer
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -13,6 +13,7 @@ interface SidebarProps {
 
 const navItems = [
   { id: 'factories', label: 'Factories', icon: Factory },
+  { id: 'builds', label: 'Builds', icon: Hammer },
   { id: 'review', label: 'Code Review', icon: Eye },
   { id: 'assistants', label: 'Assistants', icon: Shield },
   { id: 'live', label: 'Live Collab', icon: Users },

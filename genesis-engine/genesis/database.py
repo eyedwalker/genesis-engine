@@ -369,6 +369,69 @@ def init_db():
                     conn.rollback()  # Reset failed transaction state for PostgreSQL
                 pass  # Column already exists
 
+        # ---- Build Runs & Approvals (Phase 2) ----
+        if USE_POSTGRES:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS build_runs (
+                    id TEXT PRIMARY KEY,
+                    factory_id TEXT REFERENCES factories(id),
+                    tenant_id TEXT DEFAULT 'default',
+                    status TEXT DEFAULT 'queued',
+                    feature_request TEXT NOT NULL,
+                    stages TEXT DEFAULT '[]',
+                    vibe_score INTEGER,
+                    findings_summary TEXT,
+                    review_id TEXT REFERENCES reviews(id),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id TEXT PRIMARY KEY,
+                    build_run_id TEXT NOT NULL REFERENCES build_runs(id),
+                    tenant_id TEXT DEFAULT 'default',
+                    reviewer_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    feedback TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS build_runs (
+                    id TEXT PRIMARY KEY,
+                    factory_id TEXT,
+                    tenant_id TEXT DEFAULT 'default',
+                    status TEXT DEFAULT 'queued',
+                    feature_request TEXT NOT NULL,
+                    stages TEXT DEFAULT '[]',
+                    vibe_score INTEGER,
+                    findings_summary TEXT,
+                    review_id TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    FOREIGN KEY (factory_id) REFERENCES factories(id),
+                    FOREIGN KEY (review_id) REFERENCES reviews(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id TEXT PRIMARY KEY,
+                    build_run_id TEXT NOT NULL,
+                    tenant_id TEXT DEFAULT 'default',
+                    reviewer_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    feedback TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TEXT,
+                    FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
+                )
+            """)
+
         # Create default tenant for backward compatibility
         if USE_POSTGRES:
             cursor.execute("""
@@ -1051,6 +1114,240 @@ def _row_to_setting(row, cursor=None) -> Dict[str, Any]:
         setting["display_value"] = setting["value"]
 
     return setting
+
+
+# =============================================================================
+# Build Run Operations (Phase 2)
+# =============================================================================
+
+def create_build_run(
+    id: str,
+    factory_id: str,
+    feature_request: str,
+    tenant_id: str = "default"
+) -> Dict[str, Any]:
+    """Create a new build run"""
+    now = datetime.utcnow().isoformat()
+    initial_stages = json.dumps([
+        {"name": "Queued", "status": "active", "milestone": "Build request received"},
+        {"name": "Designing", "status": "pending", "milestone": "Architect designing solution"},
+        {"name": "Building", "status": "pending", "milestone": "Builder writing code"},
+        {"name": "Testing", "status": "pending", "milestone": "Running tests and linting"},
+        {"name": "Reviewing", "status": "pending", "milestone": "Review swarm analyzing code"},
+        {"name": "Approval", "status": "pending", "milestone": "Awaiting stakeholder sign-off"}
+    ])
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("""
+                INSERT INTO build_runs (id, factory_id, tenant_id, status, feature_request, stages, created_at, updated_at)
+                VALUES (%s, %s, %s, 'queued', %s, %s, %s, %s)
+            """, (id, factory_id, tenant_id, feature_request, initial_stages, now, now))
+        else:
+            cursor.execute("""
+                INSERT INTO build_runs (id, factory_id, tenant_id, status, feature_request, stages, created_at, updated_at)
+                VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)
+            """, (id, factory_id, tenant_id, feature_request, initial_stages, now, now))
+
+    return {
+        "id": id, "factory_id": factory_id, "tenant_id": tenant_id,
+        "status": "queued", "feature_request": feature_request,
+        "stages": json.loads(initial_stages), "vibe_score": None,
+        "findings_summary": None, "review_id": None,
+        "created_at": now, "updated_at": now, "completed_at": None
+    }
+
+
+def get_build_run(id: str) -> Optional[Dict[str, Any]]:
+    """Get build run by ID"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("SELECT * FROM build_runs WHERE id = %s", (id,))
+        else:
+            cursor.execute("SELECT * FROM build_runs WHERE id = ?", (id,))
+        row = cursor.fetchone()
+        if row:
+            return _row_to_build_run(row, cursor)
+        return None
+
+
+def get_build_runs(factory_id: str = None, tenant_id: str = None, limit: int = 20) -> List[Dict[str, Any]]:
+    """Get build runs with optional filters"""
+    conditions = []
+    params = []
+
+    if factory_id:
+        p = "%s" if USE_POSTGRES else "?"
+        conditions.append(f"factory_id = {p}")
+        params.append(factory_id)
+    if tenant_id:
+        p = "%s" if USE_POSTGRES else "?"
+        conditions.append(f"tenant_id = {p}")
+        params.append(tenant_id)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    p = "%s" if USE_POSTGRES else "?"
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        query = f"SELECT * FROM build_runs {where} ORDER BY created_at DESC LIMIT {p}"
+        params.append(limit)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        return [_row_to_build_run(row, cursor) for row in rows]
+
+
+def update_build_run(id: str, **kwargs) -> Optional[Dict[str, Any]]:
+    """Update build run fields"""
+    allowed = ["status", "stages", "vibe_score", "findings_summary", "review_id", "completed_at"]
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return get_build_run(id)
+
+    if "stages" in updates and isinstance(updates["stages"], list):
+        updates["stages"] = json.dumps(updates["stages"])
+    updates["updated_at"] = datetime.utcnow().isoformat()
+
+    if USE_POSTGRES:
+        set_clause = ", ".join(f"{k} = %s" for k in updates.keys())
+    else:
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+
+    values = list(updates.values()) + [id]
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute(f"UPDATE build_runs SET {set_clause} WHERE id = %s", values)
+        else:
+            cursor.execute(f"UPDATE build_runs SET {set_clause} WHERE id = ?", values)
+
+    return get_build_run(id)
+
+
+def _row_to_build_run(row, cursor=None) -> Dict[str, Any]:
+    """Convert row to build run dict"""
+    if USE_POSTGRES:
+        d = _row_to_dict(row, cursor)
+    else:
+        d = dict(row)
+    return {
+        "id": d["id"],
+        "factory_id": d["factory_id"],
+        "tenant_id": d.get("tenant_id", "default"),
+        "status": d["status"],
+        "feature_request": d["feature_request"],
+        "stages": json.loads(d["stages"]) if d["stages"] else [],
+        "vibe_score": d.get("vibe_score"),
+        "findings_summary": json.loads(d["findings_summary"]) if d.get("findings_summary") else None,
+        "review_id": d.get("review_id"),
+        "created_at": str(d["created_at"]) if d["created_at"] else None,
+        "updated_at": str(d["updated_at"]) if d["updated_at"] else None,
+        "completed_at": str(d["completed_at"]) if d.get("completed_at") else None
+    }
+
+
+# =============================================================================
+# Approval Operations (Phase 2)
+# =============================================================================
+
+def create_approval(id: str, build_run_id: str, tenant_id: str = "default") -> Dict[str, Any]:
+    """Create an approval request for a build run"""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("""
+                INSERT INTO approvals (id, build_run_id, tenant_id, status, created_at)
+                VALUES (%s, %s, %s, 'pending', %s)
+            """, (id, build_run_id, tenant_id, now))
+        else:
+            cursor.execute("""
+                INSERT INTO approvals (id, build_run_id, tenant_id, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+            """, (id, build_run_id, tenant_id, now))
+    return {
+        "id": id, "build_run_id": build_run_id, "tenant_id": tenant_id,
+        "reviewer_id": None, "status": "pending", "feedback": None,
+        "created_at": now, "resolved_at": None
+    }
+
+
+def resolve_approval(id: str, status: str, reviewer_id: str = None, feedback: str = None) -> Optional[Dict[str, Any]]:
+    """Resolve an approval (approve or reject)"""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("""
+                UPDATE approvals SET status = %s, reviewer_id = %s, feedback = %s, resolved_at = %s
+                WHERE id = %s
+            """, (status, reviewer_id, feedback, now, id))
+        else:
+            cursor.execute("""
+                UPDATE approvals SET status = ?, reviewer_id = ?, feedback = ?, resolved_at = ?
+                WHERE id = ?
+            """, (status, reviewer_id, feedback, now, id))
+    return get_approval(id)
+
+
+def get_approval(id: str) -> Optional[Dict[str, Any]]:
+    """Get approval by ID"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("SELECT * FROM approvals WHERE id = %s", (id,))
+        else:
+            cursor.execute("SELECT * FROM approvals WHERE id = ?", (id,))
+        row = cursor.fetchone()
+        if row:
+            return _row_to_approval(row, cursor)
+        return None
+
+
+def get_approvals_for_build(build_run_id: str) -> List[Dict[str, Any]]:
+    """Get all approvals for a build run"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if USE_POSTGRES:
+            cursor.execute("SELECT * FROM approvals WHERE build_run_id = %s ORDER BY created_at DESC", (build_run_id,))
+        else:
+            cursor.execute("SELECT * FROM approvals WHERE build_run_id = ? ORDER BY created_at DESC", (build_run_id,))
+        rows = cursor.fetchall()
+        return [_row_to_approval(row, cursor) for row in rows]
+
+
+def get_pending_approvals(tenant_id: str = None) -> List[Dict[str, Any]]:
+    """Get all pending approvals"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if tenant_id:
+            p = "%s" if USE_POSTGRES else "?"
+            cursor.execute(f"SELECT * FROM approvals WHERE status = 'pending' AND tenant_id = {p} ORDER BY created_at ASC", (tenant_id,))
+        else:
+            cursor.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at ASC")
+        rows = cursor.fetchall()
+        return [_row_to_approval(row, cursor) for row in rows]
+
+
+def _row_to_approval(row, cursor=None) -> Dict[str, Any]:
+    """Convert row to approval dict"""
+    if USE_POSTGRES:
+        d = _row_to_dict(row, cursor)
+    else:
+        d = dict(row)
+    return {
+        "id": d["id"],
+        "build_run_id": d["build_run_id"],
+        "tenant_id": d.get("tenant_id", "default"),
+        "reviewer_id": d.get("reviewer_id"),
+        "status": d["status"],
+        "feedback": d.get("feedback"),
+        "created_at": str(d["created_at"]) if d["created_at"] else None,
+        "resolved_at": str(d.get("resolved_at")) if d.get("resolved_at") else None
+    }
 
 
 # Initialize database on import

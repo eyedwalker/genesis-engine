@@ -1779,6 +1779,279 @@ async def get_stats():
 
 
 # ============================================================================
+# REST Endpoints - Build Runs (Phase 2)
+# ============================================================================
+
+# Import synthesizer
+_synth_path = Path(__file__).parent.parent / "synthesizer.py"
+_synth_spec = importlib.util.spec_from_file_location("genesis.synthesizer", _synth_path)
+synthesizer = importlib.util.module_from_spec(_synth_spec)
+sys.modules["genesis.synthesizer"] = synthesizer
+_synth_spec.loader.exec_module(synthesizer)
+
+# In-memory build subscribers for WebSocket streaming
+build_subscribers: Dict[str, List[WebSocket]] = {}
+
+
+class BuildRunRequest(BaseModel):
+    """Start a new build run"""
+    factory_id: str
+    feature_request: str = Field(..., min_length=1)
+
+
+class ApprovalAction(BaseModel):
+    """Approve or reject a build"""
+    action: str = Field(..., pattern="^(approve|reject)$")
+    feedback: Optional[str] = None
+
+
+@app.post("/api/builds")
+async def create_build(request: BuildRunRequest, background_tasks: BackgroundTasks):
+    """Start a new build run for a factory"""
+    factory = db.get_factory(request.factory_id)
+    if not factory:
+        raise HTTPException(status_code=404, detail="Factory not found")
+
+    build_id = f"build-{uuid.uuid4().hex[:12]}"
+    build = db.create_build_run(
+        id=build_id,
+        factory_id=request.factory_id,
+        feature_request=request.feature_request
+    )
+
+    # Run build pipeline in background
+    background_tasks.add_task(run_build_pipeline, build_id, factory, request.feature_request)
+
+    return build
+
+
+@app.get("/api/builds")
+async def list_builds(factory_id: Optional[str] = None, limit: int = 20):
+    """List build runs"""
+    return db.get_build_runs(factory_id=factory_id, limit=limit)
+
+
+@app.get("/api/builds/{build_id}")
+async def get_build(build_id: str):
+    """Get a specific build run"""
+    build = db.get_build_run(build_id)
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    return build
+
+
+@app.post("/api/builds/{build_id}/approve")
+async def approve_build(build_id: str, request: ApprovalAction):
+    """Approve or reject a build run"""
+    build = db.get_build_run(build_id)
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    if build["status"] != "pending_approval":
+        raise HTTPException(status_code=400, detail=f"Build is not pending approval (status: {build['status']})")
+
+    approval_id = f"apr-{uuid.uuid4().hex[:12]}"
+    approval = db.create_approval(id=approval_id, build_run_id=build_id)
+    approval = db.resolve_approval(
+        id=approval_id,
+        status="approved" if request.action == "approve" else "rejected",
+        feedback=request.feedback
+    )
+
+    new_status = "approved" if request.action == "approve" else "rejected"
+    stages = build["stages"]
+    for stage in stages:
+        if stage["name"] == "Approval":
+            stage["status"] = "completed" if request.action == "approve" else "failed"
+            stage["milestone"] = "Approved by stakeholder" if request.action == "approve" else f"Rejected: {request.feedback or 'No feedback'}"
+
+    db.update_build_run(build_id, status=new_status, stages=stages, completed_at=datetime.utcnow().isoformat())
+
+    # Notify WebSocket subscribers
+    await _notify_build_subscribers(build_id, {
+        "type": "build_update",
+        "build_id": build_id,
+        "status": new_status,
+        "stages": stages,
+        "approval": approval
+    })
+
+    return db.get_build_run(build_id)
+
+
+@app.get("/api/builds/{build_id}/approvals")
+async def get_build_approvals(build_id: str):
+    """Get approvals for a build run"""
+    return db.get_approvals_for_build(build_id)
+
+
+@app.get("/api/approvals/pending")
+async def get_pending():
+    """Get all pending approvals"""
+    return db.get_pending_approvals()
+
+
+@app.websocket("/ws/builds/{build_id}")
+async def build_websocket(websocket: WebSocket, build_id: str):
+    """WebSocket for real-time build status updates"""
+    await websocket.accept()
+
+    if build_id not in build_subscribers:
+        build_subscribers[build_id] = []
+    build_subscribers[build_id].append(websocket)
+
+    # Send current state
+    build = db.get_build_run(build_id)
+    if build:
+        await websocket.send_json({"type": "build_state", "build": build})
+
+    try:
+        while True:
+            await websocket.receive_text()  # Keep alive
+    except WebSocketDisconnect:
+        if build_id in build_subscribers:
+            build_subscribers[build_id] = [ws for ws in build_subscribers[build_id] if ws != websocket]
+
+
+async def _notify_build_subscribers(build_id: str, message: dict):
+    """Send update to all WebSocket subscribers for a build"""
+    if build_id not in build_subscribers:
+        return
+    dead = []
+    for ws in build_subscribers[build_id]:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        build_subscribers[build_id].remove(ws)
+
+
+async def _update_build_stage(build_id: str, stage_name: str, status: str, milestone: str = None):
+    """Update a specific stage in a build run and notify subscribers"""
+    build = db.get_build_run(build_id)
+    if not build:
+        return
+    stages = build["stages"]
+    for stage in stages:
+        if stage["name"] == stage_name:
+            stage["status"] = status
+            if milestone:
+                stage["milestone"] = milestone
+    # Set overall build status based on active stage
+    build_status = stage_name.lower().replace(" ", "_") if status == "active" else build["status"]
+    db.update_build_run(build_id, stages=stages, status=build_status)
+
+    await _notify_build_subscribers(build_id, {
+        "type": "build_update",
+        "build_id": build_id,
+        "status": build_status,
+        "stages": stages,
+        "active_stage": stage_name,
+        "milestone": milestone or stage_name
+    })
+
+
+async def run_build_pipeline(build_id: str, factory: dict, feature_request: str):
+    """Simulated build pipeline that progresses through stages"""
+    try:
+        # Stage 1: Designing
+        await _update_build_stage(build_id, "Queued", "completed", "Build queued")
+        await _update_build_stage(build_id, "Designing", "active", f"Designing solution for: {feature_request[:60]}")
+        await asyncio.sleep(3)  # Simulate architect work
+
+        # Stage 2: Building
+        await _update_build_stage(build_id, "Designing", "completed", "Architecture plan ready")
+        await _update_build_stage(build_id, "Building", "active", "Writing code and generating files")
+        await asyncio.sleep(4)  # Simulate builder work
+
+        # Stage 3: Testing
+        await _update_build_stage(build_id, "Building", "completed", "Code generation complete")
+        await _update_build_stage(build_id, "Testing", "active", "Running linters and test suite")
+        await asyncio.sleep(2)  # Simulate testing
+
+        # Stage 4: Reviewing
+        await _update_build_stage(build_id, "Testing", "completed", "All tests passing")
+        await _update_build_stage(build_id, "Reviewing", "active", "Review swarm analyzing code quality")
+        await asyncio.sleep(3)  # Simulate review
+
+        # Generate synthetic findings for demo
+        sample_findings = _generate_sample_findings(factory, feature_request)
+        synthesis = synthesizer.synthesize_findings(sample_findings, ["security", "performance", "architecture"])
+
+        # Stage 5: Pending Approval
+        await _update_build_stage(build_id, "Reviewing", "completed",
+                                  f"Review complete: Vibe Score {synthesis['vibe_score']}/100")
+        await _update_build_stage(build_id, "Approval", "active", "Awaiting stakeholder approval")
+
+        db.update_build_run(
+            build_id,
+            status="pending_approval",
+            vibe_score=synthesis["vibe_score"],
+            findings_summary=json.dumps(synthesis)
+        )
+
+        await _notify_build_subscribers(build_id, {
+            "type": "build_update",
+            "build_id": build_id,
+            "status": "pending_approval",
+            "vibe_score": synthesis["vibe_score"],
+            "findings_summary": synthesis,
+            "stages": db.get_build_run(build_id)["stages"]
+        })
+
+    except Exception as e:
+        db.update_build_run(build_id, status="failed")
+        await _notify_build_subscribers(build_id, {
+            "type": "build_error",
+            "build_id": build_id,
+            "error": str(e)
+        })
+
+
+def _generate_sample_findings(factory: dict, feature: str) -> List[Dict]:
+    """Generate realistic sample findings for the demo pipeline"""
+    import random
+    findings = []
+    assistants = ["security", "performance", "architecture"]
+    severities = ["low", "low", "medium", "medium", "high"]
+
+    for i in range(random.randint(3, 8)):
+        assistant = random.choice(assistants)
+        severity = random.choice(severities)
+        findings.append({
+            "id": f"f-{uuid.uuid4().hex[:8]}",
+            "severity": severity,
+            "title": _sample_finding_title(assistant, severity),
+            "description": f"Finding in {feature}",
+            "assistant": assistant,
+            "line": random.randint(1, 200),
+            "recommendation": f"Review and address this {severity} {assistant} finding"
+        })
+    return findings
+
+
+def _sample_finding_title(assistant: str, severity: str) -> str:
+    titles = {
+        "security": {
+            "high": "Input validation missing on user-facing endpoint",
+            "medium": "Consider adding rate limiting to this endpoint",
+            "low": "Add CSRF token validation for form submissions"
+        },
+        "performance": {
+            "high": "N+1 query pattern detected in data fetching",
+            "medium": "Missing database index on frequently queried column",
+            "low": "Consider caching this computed value"
+        },
+        "architecture": {
+            "high": "Business logic mixed with controller layer",
+            "medium": "Missing error boundary for this component",
+            "low": "Extract shared logic into utility module"
+        }
+    }
+    return titles.get(assistant, {}).get(severity, f"{severity.title()} {assistant} finding")
+
+
+# ============================================================================
 # REST Endpoints - Settings
 # ============================================================================
 

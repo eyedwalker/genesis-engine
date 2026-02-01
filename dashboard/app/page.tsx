@@ -17,10 +17,11 @@ import { LiveCollaboration } from '@/components/LiveCollaboration'
 import { FactorySetupPanel } from '@/components/FactorySetupPanel'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { Terminal } from '@/components/Terminal'
+import { BuildView } from '@/components/BuildView'
 import { useGenesisStore, formatRelativeTime } from '@/lib/store'
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState<'factories' | 'review' | 'assistants' | 'live' | 'settings' | 'terminal'>('factories')
+  const [activeTab, setActiveTab] = useState<'factories' | 'builds' | 'review' | 'assistants' | 'live' | 'settings' | 'terminal'>('factories')
   const [showCreateModal, setShowCreateModal] = useState(false)
   const { factories, assistants, stats, loadData, isLoading, error } = useGenesisStore()
 
@@ -98,6 +99,18 @@ export default function Dashboard() {
                 transition={{ duration: 0.2 }}
               >
                 <FactoriesView factories={factories} stats={stats} isLoading={isLoading} />
+              </motion.div>
+            )}
+
+            {activeTab === 'builds' && (
+              <motion.div
+                key="builds"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <BuildView />
               </motion.div>
             )}
 

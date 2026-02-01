@@ -31,12 +31,25 @@ _env_path = Path(__file__).parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
 
-from .genesis_engine import GenesisEngine
-from .genesis_agent import genesis_agent, run_genesis
-from .factory_template import FactoryTemplate, FactoryConfig
-from .dagger_executor import DaggerExecutor
-from .tenant_manager import TenantManager
-from .devcontainer import DevContainerManager
+# Guard heavy imports that require optional dependencies (e.g. pydantic_ai)
+# The API server uses importlib to load only what it needs, but the package
+# __init__ still runs when Python resolves the module path.
+try:
+    from .genesis_engine import GenesisEngine
+    from .genesis_agent import genesis_agent, run_genesis
+    from .factory_template import FactoryTemplate, FactoryConfig
+    from .dagger_executor import DaggerExecutor
+    from .tenant_manager import TenantManager
+    from .devcontainer import DevContainerManager
+except ImportError:
+    GenesisEngine = None
+    genesis_agent = None
+    run_genesis = None
+    FactoryTemplate = None
+    FactoryConfig = None
+    DaggerExecutor = None
+    TenantManager = None
+    DevContainerManager = None
 
 __all__ = [
     "GenesisEngine",

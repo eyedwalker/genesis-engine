@@ -355,10 +355,18 @@ def init_db():
         for table in ["factories", "reviews", "sessions", "setup_tasks"]:
             try:
                 if USE_POSTGRES:
-                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                    # PostgreSQL: check column exists first to avoid aborting transaction
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = %s AND column_name = 'tenant_id'
+                    """, (table,))
+                    if not cursor.fetchone():
+                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
                 else:
                     cursor.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT DEFAULT 'default'")
             except Exception:
+                if USE_POSTGRES:
+                    conn.rollback()  # Reset failed transaction state for PostgreSQL
                 pass  # Column already exists
 
         # Create default tenant for backward compatibility

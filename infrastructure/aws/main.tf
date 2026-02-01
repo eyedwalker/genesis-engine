@@ -165,7 +165,7 @@ resource "aws_db_instance" "genesis" {
   publicly_accessible    = false
   skip_final_snapshot    = true
 
-  backup_retention_period = 7
+  backup_retention_period = 1    # Free tier max
   backup_window           = "03:00-04:00"
   maintenance_window      = "Mon:04:00-Mon:05:00"
 
